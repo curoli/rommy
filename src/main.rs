@@ -134,12 +134,11 @@ fn run(
     let stderr_txt = String::from_utf8_lossy(&output.stderr);
 
     // Prepare writer
-    if let Some(parent) = out.parent() {
-        if !parent.exists() {
+    if let Some(parent) = out.parent()
+        && !parent.exists() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Cannot create directory {}", parent.display()))?;
         }
-    }
     let mut f = OpenOptions::new()
         .create(true)
         .write(true)
