@@ -3,8 +3,8 @@ use clap::{ArgAction, Parser, Subcommand};
 use chrono::{DateTime, Utc};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Read, Write};
-use std::path::{Path, PathBuf};
+use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 #[derive(Parser, Debug)]
@@ -120,7 +120,7 @@ fn run(
     // Collect metadata
     let rommy_version = env!("CARGO_PKG_VERSION").to_string();
     let user = whoami::username();
-    let host = whoami::hostname();
+    let host = whoami::fallible::hostname();
 
     let start: DateTime<Utc> = Utc::now();
     let output = command.output().with_context(|| "Failed to execute process")?;
@@ -134,12 +134,11 @@ fn run(
     let stderr_txt = String::from_utf8_lossy(&output.stderr);
 
     // Prepare writer
-    if let Some(parent) = out.parent() {
-        if !parent.exists() {
+    if let Some(parent) = out.parent()
+        && !parent.exists() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Cannot create directory {}", parent.display()))?;
         }
-    }
     let mut f = OpenOptions::new()
         .create(true)
         .write(true)
@@ -155,7 +154,9 @@ fn run(
     if let Some(label) = label { writeln!(f, "label: {}", label)?; }
     writeln!(f, "cwd: {}", fs::canonicalize(&cwd_path)?.display())?;
     writeln!(f, "user: {}", user)?;
-    writeln!(f, "host: {}", host)?;
+    if let Ok(host) = host {
+        writeln!(f, "host: {}", host)?;        
+    }
     match &display_command {
         RommyCommand::Script { path, .. } => {
             writeln!(f, "script_path: {}", path.display())?;

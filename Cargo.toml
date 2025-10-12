@@ -1,14 +1,19 @@
 [package]
 name = "rommy"
+description = "CLI tool to make coding with your chatbot easier"
+authors = ["Japati Aisyah Bintang <stardove.bintang@gmail.com>", "Oliver Ruebenacker <curoli@gmail.com>"]
+readme = "README.md"
+repository = "https://github.com/jati-bintang/rommy"
+license = "Apache-2.0"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
-whoami = "1.5"
+whoami = "1.6"
 
 [profile.release]
 lto = true
