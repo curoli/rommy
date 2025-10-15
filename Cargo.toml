@@ -7,6 +7,9 @@ repository = "https://github.com/jati-bintang/rommy"
 license = "Apache-2.0"
 version = "0.1.0"
 edition = "2024"
+keywords = ["cli", "developer-tools", "snapshot", "chat", "rommy"]
+categories = ["development-tools", "command-line-utilities"]
+
 
 [dependencies]
 anyhow = "1"
