@@ -1,4 +1,4 @@
-use rommy::parser::{parse_str, RommyRecord}; // Falls du crate=bin hast, ändere Import unten (siehe Hinweis)
+use rommy::parser::parse_str; // Falls du crate=bin hast, ändere Import unten (siehe Hinweis)
 
 // Da dein Paket aktuell bin-only ist, kannst du entweder:
 // 1) src/lib.rs mit `pub mod parser;` anlegen und im Cargo.toml `[lib]` sektion hinzufügen,
