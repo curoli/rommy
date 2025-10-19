@@ -108,14 +108,38 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
         if let Some(block) = Block::from_marker(line) {
             match state {
                 State::Idle => {
-                    // Ein neuer Record beginnt immer mit META
-                    if block != Block::Meta {
-                        // Überspringe Rauschen vor dem ersten Record
-                        continue;
+                    match block {
+                        Block::Meta => {
+                            // Falls schon ein Record offen war, zuerst abschließen,
+                            // BEVOR wir einen neuen starten.
+                            if cur_meta.is_some() {
+                                finish_record(
+                                    &mut cur_meta,
+                                    &mut cur_cmd,
+                                    &mut cur_stdout,
+                                    &mut cur_stderr,
+                                    &mut out,
+                                )?;
+                            }
+                            start_record(
+                                &mut cur_meta,
+                                &mut cur_cmd,
+                                &mut cur_stdout,
+                                &mut cur_stderr,
+                            );
+                            saw_any_block_in_this_record = true;
+                            state = State::InBlock(Block::Meta);
+                        }
+                        // Erlaube Folgeblöcke, wenn META bereits gesehen wurde
+                        Block::Command | Block::Stdout | Block::Stderr => {
+                            if cur_meta.is_some() {
+                                state = State::InBlock(block);
+                            } else {
+                                // Rauschen vor dem ersten META ignorieren
+                                continue;
+                            }
+                        }
                     }
-                    start_record(&mut cur_meta, &mut cur_cmd, &mut cur_stdout, &mut cur_stderr);
-                    state = State::InBlock(Block::Meta);
-                    saw_any_block_in_this_record = true;
                 }
                 State::InBlock(_) => {
                     // Wir sind noch in einem Block und sehen sofort den nächsten Marker → Formatfehler
