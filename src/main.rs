@@ -7,6 +7,8 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
+mod outpath;
+
 #[derive(Parser, Debug)]
 #[command(name="rommy", version, about="Structured run snapshots for chat & reviews")]
 struct Cli {
@@ -18,10 +20,10 @@ struct Cli {
 enum Commands {
     /// Execute a bash command or bash script and write a 4-block rommy file
     Run {
-        /// Output file (will be created if missing)
+        /// Output file (optional; if omitted, Rommy chooses a time-based path)
         #[arg(long, value_name="FILE")]
-        out: PathBuf,
-
+        out: Option<PathBuf>,
+        
         /// Working directory
         #[arg(long, value_name="DIR")]
         cwd: Option<PathBuf>,
@@ -58,7 +60,7 @@ fn main() -> Result<()> {
 }
 
 fn run(
-    out: PathBuf,
+    out: Option<PathBuf>,
     cwd: Option<PathBuf>,
     envs: Vec<String>,
     append: bool,
@@ -133,8 +135,22 @@ fn run(
     let stdout_txt = String::from_utf8_lossy(&output.stdout);
     let stderr_txt = String::from_utf8_lossy(&output.stderr);
 
+    // Bestimme Ausgabedatei
+    let out_path: PathBuf = if let Some(explicit) = out {
+        explicit
+    } else {
+        // Display-String für COMMAND-Block vorbereiten (wie bisher)
+        let display_for_token = match &display_command {
+            RommyCommand::Script { .. } => "#!/usr/bin/env bash\n<script>".to_string(),
+            RommyCommand::Line(line) => format!("$ {}", line),
+        };
+        outpath::resolve_auto_out_path(&display_for_token)
+            .context("failed to resolve automatic output path")?
+    };
+
+    
     // Prepare writer
-    if let Some(parent) = out.parent()
+    if let Some(parent) = out_path.parent()
         && !parent.exists() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("Cannot create directory {}", parent.display()))?;
@@ -144,8 +160,8 @@ fn run(
         .write(true)
         .append(append)
         .truncate(!append)
-        .open(&out)
-        .with_context(|| format!("Cannot open {}", out.display()))?;
+        .open(&out_path)
+        .with_context(|| format!("Cannot open {}", out_path.display()))?;
 
     // --- Write blocks ---
     // META
@@ -168,6 +184,7 @@ fn run(
     writeln!(f, "start_ts: {}", start.to_rfc3339())?;
     writeln!(f, "end_ts: {}", end.to_rfc3339())?;
     writeln!(f, "duration_ms: {}", duration_ms)?;
+    writeln!(f, "output_path: {}", out_path.display())?;
     writeln!(f, "status: {}", status)?;
     writeln!(f, "exit_code: {}", exit_code)?;
     writeln!(f, "<<<END>>>")?;
@@ -194,7 +211,7 @@ fn run(
     f.write_all(stderr_txt.as_bytes())?;
     writeln!(f, "<<<END>>>")?;
 
-    eprintln!("Wrote {}", out.display());
+    eprintln!("Wrote {}", out_path.display());
     Ok(())
 }
 
