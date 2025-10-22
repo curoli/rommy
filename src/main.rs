@@ -3,9 +3,10 @@ use clap::{ArgAction, Parser, Subcommand};
 use chrono::{DateTime, Utc};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, Child};
+use std::io::Write;
+
 
 mod outpath;
 
@@ -23,39 +24,96 @@ enum Commands {
         /// Output file (optional; if omitted, Rommy chooses a time-based path)
         #[arg(long, value_name="FILE")]
         out: Option<PathBuf>,
-        
+    
         /// Working directory
         #[arg(long, value_name="DIR")]
         cwd: Option<PathBuf>,
-
+    
         /// Provide KEY=VALUE environment pairs (repeatable)
         #[arg(long = "env", value_name="KEY=VALUE", action=ArgAction::Append)]
         envs: Vec<String>,
-
+    
         /// Append instead of overwrite
         #[arg(long)]
         append: bool,
-
+    
         /// Optional label to include in META
         #[arg(long)]
         label: Option<String>,
-
+    
         /// Run given bash script file instead of a single command
         #[arg(long, value_name="SCRIPT.sh", conflicts_with = "cmd")]
         script: Option<PathBuf>,
-
-        /// Command to run (after --). Example: rommy run --out x -- cargo test
+    
+        /// Disable streaming (overrides --stream)
+        #[arg(long = "no-stream")]
+        no_stream: bool,
+    
+        /// Command to run (after --). Example: rommy run -- cargo test
         #[arg(last = true)]
         cmd: Vec<String>,
-    },
+    }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Commands::Run { out, cwd, envs, append, label, script, cmd } => {
-            run(out, cwd, envs, append, label, script, cmd)
+        Commands::Run { out, cwd, envs, append, label, script, no_stream, cmd } => {
+            run(out, cwd, envs, append, label, script, no_stream, cmd)
         }
+    }
+}
+
+/// Führt den Child-Prozess aus.
+/// - stream=true: stdout/stderr werden live ins Terminal gespiegelt UND gesammelt.
+/// - stream=false: stdout/stderr werden vollständig gesammelt (keine Terminalausgabe).
+///   Rückgabe: (stdout_bytes, stderr_bytes, exit_code)
+fn spawn_and_stream(mut child: Child, stream: bool) -> anyhow::Result<(Vec<u8>, Vec<u8>, i32)> {
+    use std::io::{self, Read, Write};
+    use std::thread;
+
+    // kleiner Tee-Worker
+    fn tee<R: Read + Send + 'static, W: Write + Send + 'static>(mut r: R, mut w: W)
+        -> thread::JoinHandle<Vec<u8>>
+    {
+        thread::spawn(move || {
+            let mut buf = [0u8; 8192];
+            let mut all = Vec::new();
+            loop {
+                match r.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let _ = w.write_all(&buf[..n]);
+                        let _ = w.flush();
+                        all.extend_from_slice(&buf[..n]);
+                    }
+                    Err(_) => break,
+                }
+            }
+            all
+        })
+    }
+
+    if stream {
+        // NUR HIER die Pipes „nehmen“, um sie live zu lesen
+        let out_r = child.stdout.take();
+        let err_r = child.stderr.take();
+
+        let h_out = out_r.map(|r| tee(r, io::stdout()));
+        let h_err = err_r.map(|r| tee(r, io::stderr()));
+
+        let status = child.wait()?;
+        let code = status.code().unwrap_or(-1);
+
+        let stdout_bytes = h_out.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+        let stderr_bytes = h_err.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+
+        Ok((stdout_bytes, stderr_bytes, code))
+    } else {
+        // KEIN Streaming: nichts „take()“en → wait_with_output() liest alles komplett
+        let output = child.wait_with_output()?;
+        let code = output.status.code().unwrap_or(-1);
+        Ok((output.stdout, output.stderr, code))
     }
 }
 
@@ -66,8 +124,10 @@ fn run(
     append: bool,
     label: Option<String>,
     script: Option<PathBuf>,
+    no_stream: bool,
     cmd: Vec<String>,
 ) -> Result<()> {
+    let stream = !no_stream;
     // Resolve CWD
     let cwd_path = cwd.unwrap_or(std::env::current_dir()?);
 
@@ -124,17 +184,27 @@ fn run(
     let user = whoami::username();
     let host = whoami::fallible::hostname();
 
+    // ... du hast vorher schon `command` gebaut (bash -lc ... oder script), gut!
+    
+    // WICHTIG: Pipes setzen, sonst gibt es nichts zu lesen
+    // WICHTIG: Pipes setzen – für den Streaming-Pfad nötig.
+    // Für den no-stream-Pfad stört es nicht; wait_with_output() funktioniert weiterhin.
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    
     let start: DateTime<Utc> = Utc::now();
-    let output = command.output().with_context(|| "Failed to execute process")?;
+    let child = command.spawn().with_context(|| "Failed to spawn process")?;
+    
+    // stream = !no_stream (so wie du es aktuell ableitest)
+    let (stdout_bytes, stderr_bytes, exit_code) = spawn_and_stream(child, stream)
+        .with_context(|| "stream/capture failed")?;
+    
     let end: DateTime<Utc> = Utc::now();
     let duration_ms = (end - start).num_milliseconds();
-
-    let exit_code = output.status.code().unwrap_or(-1);
-    let status = if output.status.success() { "ok" } else { "error" };
-
-    let stdout_txt = String::from_utf8_lossy(&output.stdout);
-    let stderr_txt = String::from_utf8_lossy(&output.stderr);
-
+    
+    let status_str = if exit_code == 0 { "ok" } else { "error" };
+    let stdout_txt = String::from_utf8_lossy(&stdout_bytes);
+    let stderr_txt = String::from_utf8_lossy(&stderr_bytes);
+    
     // Bestimme Ausgabedatei
     let out_path: PathBuf = if let Some(explicit) = out {
         explicit
@@ -185,7 +255,7 @@ fn run(
     writeln!(f, "end_ts: {}", end.to_rfc3339())?;
     writeln!(f, "duration_ms: {}", duration_ms)?;
     writeln!(f, "output_path: {}", out_path.display())?;
-    writeln!(f, "status: {}", status)?;
+    writeln!(f, "status: {}", status_str)?;
     writeln!(f, "exit_code: {}", exit_code)?;
     writeln!(f, "<<<END>>>")?;
 
@@ -205,12 +275,10 @@ fn run(
     writeln!(f, "<<<STDOUT>>>")?;
     f.write_all(stdout_txt.as_bytes())?;
     writeln!(f, "<<<END>>>")?;
-
-    // STDERR
+    
     writeln!(f, "<<<STDERR>>>")?;
     f.write_all(stderr_txt.as_bytes())?;
     writeln!(f, "<<<END>>>")?;
-
     eprintln!("Wrote {}", out_path.display());
     Ok(())
 }
