@@ -8,9 +8,10 @@ use std::process::{Command, Stdio, Child};
 use std::io::Write;
 use clap::Args;
 
-
+use crate::scratch::launch_editor_and_get_script;
 
 mod outpath;
+mod scratch;
 
 #[derive(Args, Debug, Clone)]
 pub struct RunConfig {
@@ -129,8 +130,15 @@ fn run(cfg: RunConfig) -> Result<()> {
     // Resolve CWD
     let cwd_path = cfg.cwd.unwrap_or(std::env::current_dir()?);
 
+    let script = if cfg.script.is_some() {
+        cfg.script
+    } else {
+        let script = launch_editor_and_get_script()?;
+        Some(script)
+    };
+    
     // Build command invocation
-    let (display_command, exec) = if let Some(script_path) = &cfg.script {
+    let (display_command, exec) = if let Some(script_path) = &script {
         let script_abs = fs::canonicalize(script_path)
             .with_context(|| format!("Cannot resolve script path: {}", script_path.display()))?;
         let script_text = fs::read_to_string(&script_abs)
