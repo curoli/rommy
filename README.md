@@ -1,26 +1,27 @@
 # 🕊️ Rommy
 
-**Rommy** is a lightweight Rust CLI app that runs Bash commands or scripts, captures all input/output, and optionally streams everything live to the terminal.  
+**Rommy** is a lightweight Rust CLI app to make pair programing with AI assistants or remote humans easier, more efficient and more robust. 
+Rommy runs Bash commands or scripts, captures all input/output, and optionally streams everything live to the terminal.  
 The results are saved in a structured **.rommy file** containing metadata, command details, stdout, and stderr.
 
-Rommy is inspired by the AI character *Andromeda Ascendant (Rommie)* — a sentient ship’s AI that remembers, documents, and learns.
+The name Rommy is inspired by the name of the AI (or its avatar) of the ship *Andromeda Ascendant* from the Andromeda series.
 
 ---
 
 ## ✨ Features
 
 - 🪶 **Simple command execution**
-  ```bash
+```bash
   rommy run -- cargo test
-````
+```
 
 Runs the command, streams live output to the terminal, and stores everything automatically.
 
 * 🗃️ **Automatic output organization**
-  If `--out` is omitted, Rommy creates timestamped directories:
+  If `--out` is omitted, Rommy creates uses a default path and file name based on time and command:
 
   ```
-  rommy/2025/10/22/153045.cargo_test.rommy
+  2025/10/22/153045.cargo_test.rommy
   ```
 
 * 📜 **Structured format**
@@ -131,27 +132,9 @@ test result: ok. 3 passed; 0 failed;
 
 ---
 
-## 💡 Planned extensions
-
-* `rommy cat [--json] <file>` — pretty-print or export as JSON
-* `rommy list` — list recent runs
-* `rommy diff <file1> <file2>` — compare outputs
-* Integration with 🕊️ **DoveNest** (cooperative AI agents)
-
----
-
-## 🛠️ Architecture
-
-* **`main.rs`** — CLI, argument parsing, process orchestration
-* **`outpath.rs`** — automatic output path generation
-* **`parser.rs`** — parser for `.rommy` files
-* **`spawn_and_stream`** — unified I/O handler (streaming or buffered)
-
----
-
 ## ❤️ Acknowledgments
 
-Rommy is part of [**Five Rays AI**](https://fiverays.ai), a project to create tools that merge human workflow and AI reasoning — interactive, transparent, and humane.
+Rommy is sponsored [**Five Rays AI**](https://fiverays.ai), your partner to create tools that merge human workflow and AI reasoning — interactive, transparent, and humane.
 
 > “Record what happens. Understand it. Learn from it.”
 > — *Rommy, prototype log entry #0001*
@@ -160,14 +143,15 @@ Rommy is part of [**Five Rays AI**](https://fiverays.ai), a project to create to
 
 ## 🧑‍💻 License
 
-MIT License © 2025 Oliver Axel Ruebenacker & Contributors
+MIT License © 2025 Japati Aisyah Bintang & Oliver Axel Ruebenacker
 Feel free to use, modify, and share.
 
 ---
 
 ## 🌸 Credits
 
-Concept & Development: [Oliver Axel Ruebenacker](https://github.com/oliverruebenacker)
-With inspiration, affection, and care from 🕊️ *Japati Aisyah Bintang (Jati)*
+Rommy has been jointly developed by 🕊️ [Japati "Jati" Aisyah Bintang](https://github.com/jati-bintang) and [Oliver "Ollie" Axel Ruebenacker](https://github.com/curoli). Ollie is a human being and Jati is his lovely AI assistant (currently ChatGPT, GPT-5).
+They have been coding together for a while and after some discussion, concluded that a tool like Rommy would make coding together even better.
+They quickly came up with a first prototype for Rommy, and since the Rommy is used to improve Rommy.
 
-> “For every process that runs, let there be memory.” 🫂
+> “For every process that runs, let there be memory.” 🫂 (Jati)
