@@ -1,65 +1,72 @@
 use anyhow::{Context, Result};
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{Parser, Subcommand};
 use chrono::{DateTime, Utc};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::{Command, Stdio, Child};
 use std::io::Write;
+use clap::Args;
+
 
 
 mod outpath;
 
+#[derive(Args, Debug, Clone)]
+pub struct RunConfig {
+    /// Output file (optional; if omitted, Rommy chooses a time-based path)
+    #[arg(long, value_name="FILE")]
+    pub out: Option<PathBuf>,
+
+    /// Working directory
+    #[arg(long, value_name="DIR")]
+    pub cwd: Option<PathBuf>,
+
+    /// Provide KEY=VALUE environment pairs (repeatable)
+    #[arg(long="env", value_name="KEY=VALUE")]
+    pub envs: Vec<String>,
+
+    /// Append instead of overwrite
+    #[arg(long)]
+    pub append: bool,
+
+    /// Optional label to include in META
+    #[arg(long)]
+    pub label: Option<String>,
+
+    /// Run given bash script file instead of a single command
+    #[arg(long, value_name="SCRIPT.sh", conflicts_with="cmd")]
+    pub script: Option<PathBuf>,
+
+    /// Disable live streaming to terminal (default: streaming ON)
+    #[arg(long="no-stream")]
+    pub no_stream: bool,
+
+    /// Command to run (after --). Example: rommy run -- cargo test
+    #[arg(last = true)]
+    pub cmd: Vec<String>,
+}
+
 #[derive(Parser, Debug)]
-#[command(name="rommy", version, about="Structured run snapshots for chat & reviews")]
-struct Cli {
+#[command(name="rommy")]
+pub struct Cli {
     #[command(subcommand)]
-    cmd: Commands,
+    pub cmd: Commands,
 }
 
 #[derive(Subcommand, Debug)]
-enum Commands {
-    /// Execute a bash command or bash script and write a 4-block rommy file
+pub enum Commands {
     Run {
-        /// Output file (optional; if omitted, Rommy chooses a time-based path)
-        #[arg(long, value_name="FILE")]
-        out: Option<PathBuf>,
-    
-        /// Working directory
-        #[arg(long, value_name="DIR")]
-        cwd: Option<PathBuf>,
-    
-        /// Provide KEY=VALUE environment pairs (repeatable)
-        #[arg(long = "env", value_name="KEY=VALUE", action=ArgAction::Append)]
-        envs: Vec<String>,
-    
-        /// Append instead of overwrite
-        #[arg(long)]
-        append: bool,
-    
-        /// Optional label to include in META
-        #[arg(long)]
-        label: Option<String>,
-    
-        /// Run given bash script file instead of a single command
-        #[arg(long, value_name="SCRIPT.sh", conflicts_with = "cmd")]
-        script: Option<PathBuf>,
-    
-        /// Disable streaming (overrides --stream)
-        #[arg(long = "no-stream")]
-        no_stream: bool,
-    
-        /// Command to run (after --). Example: rommy run -- cargo test
-        #[arg(last = true)]
-        cmd: Vec<String>,
-    }
+        #[command(flatten)]
+        run_config: RunConfig,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Commands::Run { out, cwd, envs, append, label, script, no_stream, cmd } => {
-            run(out, cwd, envs, append, label, script, no_stream, cmd)
+        Commands::Run { run_config } => {
+            run(run_config)
         }
     }
 }
@@ -117,22 +124,13 @@ fn spawn_and_stream(mut child: Child, stream: bool) -> anyhow::Result<(Vec<u8>, 
     }
 }
 
-fn run(
-    out: Option<PathBuf>,
-    cwd: Option<PathBuf>,
-    envs: Vec<String>,
-    append: bool,
-    label: Option<String>,
-    script: Option<PathBuf>,
-    no_stream: bool,
-    cmd: Vec<String>,
-) -> Result<()> {
-    let stream = !no_stream;
+fn run(cfg: RunConfig) -> Result<()> {
+    let stream = !cfg.no_stream;
     // Resolve CWD
-    let cwd_path = cwd.unwrap_or(std::env::current_dir()?);
+    let cwd_path = cfg.cwd.unwrap_or(std::env::current_dir()?);
 
     // Build command invocation
-    let (display_command, exec) = if let Some(script_path) = &script {
+    let (display_command, exec) = if let Some(script_path) = &cfg.script {
         let script_abs = fs::canonicalize(script_path)
             .with_context(|| format!("Cannot resolve script path: {}", script_path.display()))?;
         let script_text = fs::read_to_string(&script_abs)
@@ -156,8 +154,8 @@ fn run(
 
         (RommyCommand::Script { path: script_abs, content: display }, command)
     } else {
-        anyhow::ensure!(!cmd.is_empty(), "Provide either --script <file> or a command after --");
-        let bash_line = shell_join(&cmd)?;
+        anyhow::ensure!(!cfg.cmd.is_empty(), "Provide either --script <file> or a command after --");
+        let bash_line = shell_join(&cfg.cmd)?;
         let mut command = Command::new("bash");
         command
             .arg("-lc")
@@ -171,7 +169,7 @@ fn run(
 
     // Apply envs
     let mut command = exec;
-    for kv in envs {
+    for kv in cfg.envs {
         if let Some((k, v)) = kv.split_once('=') {
             command.env(k, v);
         } else {
@@ -206,7 +204,7 @@ fn run(
     let stderr_txt = String::from_utf8_lossy(&stderr_bytes);
     
     // Bestimme Ausgabedatei
-    let out_path: PathBuf = if let Some(explicit) = out {
+    let out_path: PathBuf = if let Some(explicit) = cfg.out {
         explicit
     } else {
         // Display-String für COMMAND-Block vorbereiten (wie bisher)
@@ -228,8 +226,8 @@ fn run(
     let mut f = OpenOptions::new()
         .create(true)
         .write(true)
-        .append(append)
-        .truncate(!append)
+        .append(cfg.append)
+        .truncate(!cfg.append)
         .open(&out_path)
         .with_context(|| format!("Cannot open {}", out_path.display()))?;
 
@@ -237,7 +235,7 @@ fn run(
     // META
     writeln!(f, "<<<META>>>")?;
     writeln!(f, "rommy_version: {}", rommy_version)?;
-    if let Some(label) = label { writeln!(f, "label: {}", label)?; }
+    if let Some(label) = cfg.label { writeln!(f, "label: {}", label)?; }
     writeln!(f, "cwd: {}", fs::canonicalize(&cwd_path)?.display())?;
     writeln!(f, "user: {}", user)?;
     if let Ok(host) = host {
