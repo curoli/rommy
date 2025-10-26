@@ -1,17 +1,24 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, Args, ValueEnum};
 use chrono::{DateTime, Utc};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::path::PathBuf;
 use std::process::{Command, Stdio, Child};
-use std::io::Write;
-use clap::Args;
+use std::io::{self, Write, IsTerminal, Read};
+use std::thread;
 
 use crate::scratch::launch_editor_and_get_script;
 
 mod outpath;
 mod scratch;
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ColorChoice { Auto, Always, Never }
+
+const CYAN: &str   = "\x1b[36m";
+const YELLOW: &str = "\x1b[33m";
+const RESET: &str  = "\x1b[0m";
 
 #[derive(Args, Debug, Clone)]
 pub struct RunConfig {
@@ -46,6 +53,10 @@ pub struct RunConfig {
     /// Command to run (after --). Example: rommy run -- cargo test
     #[arg(last = true)]
     pub cmd: Vec<String>,
+    
+    /// Color output: auto|always|never (default: auto)
+    #[arg(long = "color", value_enum, default_value_t = ColorChoice::Auto)]
+    pub color: ColorChoice,
 }
 
 #[derive(Parser, Debug)]
@@ -76,14 +87,14 @@ fn main() -> Result<()> {
 /// - stream=true: stdout/stderr werden live ins Terminal gespiegelt UND gesammelt.
 /// - stream=false: stdout/stderr werden vollständig gesammelt (keine Terminalausgabe).
 ///   Rückgabe: (stdout_bytes, stderr_bytes, exit_code)
-fn spawn_and_stream(mut child: Child, stream: bool) -> anyhow::Result<(Vec<u8>, Vec<u8>, i32)> {
-    use std::io::{self, Read, Write};
-    use std::thread;
-
-    // kleiner Tee-Worker
-    fn tee<R: Read + Send + 'static, W: Write + Send + 'static>(mut r: R, mut w: W)
-        -> thread::JoinHandle<Vec<u8>>
-    {
+fn spawn_and_stream(mut child: Child, stream: bool, colors: bool)
+    -> anyhow::Result<(Vec<u8>, Vec<u8>, i32)>
+{
+    fn tee<R: Read + Send + 'static, W: Write + Send + 'static>(
+        mut r: R,
+        mut w: W,
+        colorize_each_chunk: bool,
+    ) -> thread::JoinHandle<Vec<u8>> {
         thread::spawn(move || {
             let mut buf = [0u8; 8192];
             let mut all = Vec::new();
@@ -91,9 +102,15 @@ fn spawn_and_stream(mut child: Child, stream: bool) -> anyhow::Result<(Vec<u8>, 
                 match r.read(&mut buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        let _ = w.write_all(&buf[..n]);
+                        if colorize_each_chunk {
+                            let _ = w.write_all(YELLOW.as_bytes());
+                            let _ = w.write_all(&buf[..n]);
+                            let _ = w.write_all(RESET.as_bytes());
+                        } else {
+                            let _ = w.write_all(&buf[..n]);
+                        }
                         let _ = w.flush();
-                        all.extend_from_slice(&buf[..n]);
+                        all.extend_from_slice(&buf[..n]); // capture bleibt uncolored
                     }
                     Err(_) => break,
                 }
@@ -103,12 +120,14 @@ fn spawn_and_stream(mut child: Child, stream: bool) -> anyhow::Result<(Vec<u8>, 
     }
 
     if stream {
-        // NUR HIER die Pipes „nehmen“, um sie live zu lesen
+        // take() nur im Streaming-Zweig
         let out_r = child.stdout.take();
         let err_r = child.stderr.take();
 
-        let h_out = out_r.map(|r| tee(r, io::stdout()));
-        let h_err = err_r.map(|r| tee(r, io::stderr()));
+        // stdout: niemals einfärben
+        let h_out = out_r.map(|r| tee(r, io::stdout(), false));
+        // stderr: pro Chunk einfärben (nur wenn colors=true)
+        let h_err = err_r.map(|r| tee(r, io::stderr(), colors));
 
         let status = child.wait()?;
         let code = status.code().unwrap_or(-1);
@@ -118,7 +137,7 @@ fn spawn_and_stream(mut child: Child, stream: bool) -> anyhow::Result<(Vec<u8>, 
 
         Ok((stdout_bytes, stderr_bytes, code))
     } else {
-        // KEIN Streaming: nichts „take()“en → wait_with_output() liest alles komplett
+        // kein Streaming: keine take(); vollständiges Lesen
         let output = child.wait_with_output()?;
         let code = output.status.code().unwrap_or(-1);
         Ok((output.stdout, output.stderr, code))
@@ -127,14 +146,17 @@ fn spawn_and_stream(mut child: Child, stream: bool) -> anyhow::Result<(Vec<u8>, 
 
 fn run(cfg: RunConfig) -> Result<()> {
     let stream = !cfg.no_stream;
+    let colors = color_is_enabled(cfg.color);
     // Resolve CWD
     let cwd_path = cfg.cwd.unwrap_or(std::env::current_dir()?);
 
     let script = if cfg.script.is_some() {
         cfg.script
-    } else {
+    } else if cfg.cmd.is_empty() {
         let script = launch_editor_and_get_script()?;
         Some(script)
+    } else {
+        None
     };
     
     // Build command invocation
@@ -201,7 +223,7 @@ fn run(cfg: RunConfig) -> Result<()> {
     let child = command.spawn().with_context(|| "Failed to spawn process")?;
     
     // stream = !no_stream (so wie du es aktuell ableitest)
-    let (stdout_bytes, stderr_bytes, exit_code) = spawn_and_stream(child, stream)
+    let (stdout_bytes, stderr_bytes, exit_code) = spawn_and_stream(child, stream, colors)
         .with_context(|| "stream/capture failed")?;
     
     let end: DateTime<Utc> = Utc::now();
@@ -285,7 +307,7 @@ fn run(cfg: RunConfig) -> Result<()> {
     writeln!(f, "<<<STDERR>>>")?;
     f.write_all(stderr_txt.as_bytes())?;
     writeln!(f, "<<<END>>>")?;
-    eprintln!("Wrote {}", out_path.display());
+    rommy_note_cyan(colors, &format!("Wrote {}", out_path.display()));
     Ok(())
 }
 
@@ -319,4 +341,27 @@ fn shell_escape(s: &OsStr) -> String {
     }
     escaped.push('\'');
     escaped
+}
+
+fn color_is_enabled(choice: ColorChoice) -> bool {
+    // Respect NO_COLOR, CLICOLOR, CLICOLOR_FORCE, and TTY
+    if std::env::var_os("NO_COLOR").is_some() { return false; }
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never  => false,
+        ColorChoice::Auto => {
+            if std::env::var_os("CLICOLOR_FORCE").is_some() { return true; }
+            if let Ok(v) = std::env::var("CLICOLOR") && v == "0" { return false; }            
+            io::stderr().is_terminal() || io::stdout().is_terminal()
+        }
+    }
+}
+
+// Cyan message for Rommy (stderr)
+fn rommy_note_cyan(colors: bool, msg: &str) {
+    if colors {
+        eprintln!("{CYAN}{msg}{RESET}");
+    } else {
+        eprintln!("{msg}");
+    }
 }
