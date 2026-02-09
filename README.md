@@ -4,7 +4,7 @@
 Rommy runs Bash commands or scripts, captures all input/output, and optionally streams everything live to the terminal — with color highlighting.  
 The results are saved in a structured **.rommy file** containing metadata, command details, stdout, and stderr.
 
-The name **Rommy** is inspired by *Rommie*, the AI avatar of the starship *Andromeda Ascendant* from the TV series *Andromeda*.
+The name **Rommy** is inspired by *Rommie*, the avatar of the AI of the starship *Andromeda Ascendant* from the TV series *Andromeda*.
 
 ---
 
