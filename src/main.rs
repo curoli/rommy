@@ -210,7 +210,7 @@ fn run(cfg: RunConfig) -> Result<()> {
     // Collect metadata
     let rommy_version = env!("CARGO_PKG_VERSION").to_string();
     let user = whoami::username();
-    let host = whoami::fallible::hostname();
+    let host = whoami::hostname();
 
     // ... du hast vorher schon `command` gebaut (bash -lc ... oder script), gut!
     
@@ -267,7 +267,9 @@ fn run(cfg: RunConfig) -> Result<()> {
     writeln!(f, "rommy_version: {}", rommy_version)?;
     if let Some(label) = cfg.label { writeln!(f, "label: {}", label)?; }
     writeln!(f, "cwd: {}", fs::canonicalize(&cwd_path)?.display())?;
-    writeln!(f, "user: {}", user)?;
+    if let Ok(user) = user {
+        writeln!(f, "user: {}", user)?;        
+    }
     if let Ok(host) = host {
         writeln!(f, "host: {}", host)?;        
     }
