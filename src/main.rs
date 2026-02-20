@@ -78,12 +78,24 @@ pub enum Commands {
         #[command(flatten)]
         run_config: RunConfig,
     },
+    Validate {
+        #[command(flatten)]
+        validate_config: ValidateConfig,
+    },
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct ValidateConfig {
+    /// File(s) or directory path(s) to validate
+    #[arg(value_name = "PATH", required = true)]
+    pub paths: Vec<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Commands::Run { run_config } => run(run_config),
+        Commands::Validate { validate_config } => validate(validate_config),
     }
 }
 
@@ -448,6 +460,74 @@ fn run(cfg: RunConfig) -> Result<()> {
     lock_file.unlock().ok();
 
     rommy_note_cyan(colors, &format!("Wrote {}", out_path.display()));
+    Ok(())
+}
+
+fn collect_rommy_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
+    let meta = fs::metadata(path).with_context(|| format!("Cannot stat {}", path.display()))?;
+    if meta.is_file() {
+        out.push(path.to_path_buf());
+        return Ok(());
+    }
+    if meta.is_dir() {
+        for entry in
+            fs::read_dir(path).with_context(|| format!("Cannot read {}", path.display()))?
+        {
+            let entry = entry?;
+            let p = entry.path();
+            let m = entry.metadata()?;
+            if m.is_dir() {
+                collect_rommy_files(&p, out)?;
+            } else if p
+                .extension()
+                .and_then(|s| s.to_str())
+                .map(|ext| ext.eq_ignore_ascii_case("rommy"))
+                .unwrap_or(false)
+            {
+                out.push(p);
+            }
+        }
+        return Ok(());
+    }
+    anyhow::bail!("Unsupported path type: {}", path.display());
+}
+
+fn validate(cfg: ValidateConfig) -> Result<()> {
+    let mut files = Vec::new();
+    for path in &cfg.paths {
+        collect_rommy_files(path, &mut files)?;
+    }
+
+    files.sort();
+    files.dedup();
+
+    anyhow::ensure!(!files.is_empty(), "No files found to validate");
+
+    let mut ok_count = 0usize;
+    let mut err_count = 0usize;
+
+    for file in &files {
+        match rommy::parser::parse_file(file) {
+            Ok(records) => {
+                println!("OK {} ({} record(s))", file.display(), records.len());
+                ok_count += 1;
+            }
+            Err(err) => {
+                eprintln!("ERR {}: {}", file.display(), err);
+                err_count += 1;
+            }
+        }
+    }
+
+    if err_count > 0 {
+        anyhow::bail!(
+            "Validation failed: {} file(s) invalid, {} file(s) valid",
+            err_count,
+            ok_count
+        );
+    }
+
+    println!("Validated {} file(s).", ok_count);
     Ok(())
 }
 
