@@ -83,6 +83,10 @@ pub enum Commands {
         #[command(flatten)]
         validate_config: ValidateConfig,
     },
+    Show {
+        #[command(flatten)]
+        show_config: ShowConfig,
+    },
 }
 
 #[derive(Args, Debug, Clone)]
@@ -106,11 +110,33 @@ pub enum ValidateFormat {
     Json,
 }
 
+#[derive(Args, Debug, Clone)]
+pub struct ShowConfig {
+    /// Rommy file to display
+    #[arg(value_name = "FILE")]
+    pub path: PathBuf,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = ShowFormat::Text)]
+    pub format: ShowFormat,
+
+    /// Show only one 1-based record index
+    #[arg(long, value_name = "N")]
+    pub record: Option<usize>,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ShowFormat {
+    Text,
+    Json,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
         Commands::Run { run_config } => run(run_config),
         Commands::Validate { validate_config } => validate(validate_config),
+        Commands::Show { show_config } => show(show_config),
     }
 }
 
@@ -601,6 +627,100 @@ fn validate(cfg: ValidateConfig) -> Result<()> {
             ok_count
         );
     }
+    Ok(())
+}
+
+fn print_record_text(record_index: usize, record: &rommy::parser::RommyRecord) {
+    println!("=== Record {} ===", record_index);
+    println!("<<<META>>>");
+    let mut keys: Vec<_> = record.meta.keys().collect();
+    keys.sort();
+    for key in keys {
+        if let Some(value) = record.meta.get(key) {
+            println!("{}: {}", key, value);
+        }
+    }
+    println!("<<<END>>>");
+
+    println!("<<<COMMAND>>>");
+    if !record.command.is_empty() {
+        println!("{}", record.command);
+    }
+    println!("<<<END>>>");
+
+    println!("<<<STDOUT>>>");
+    if !record.stdout.is_empty() {
+        println!("{}", record.stdout);
+    }
+    println!("<<<END>>>");
+
+    println!("<<<STDERR>>>");
+    if !record.stderr.is_empty() {
+        println!("{}", record.stderr);
+    }
+    println!("<<<END>>>");
+}
+
+fn show(cfg: ShowConfig) -> Result<()> {
+    let records = rommy::parser::parse_file(&cfg.path)
+        .with_context(|| format!("failed to parse {}", cfg.path.display()))?;
+    anyhow::ensure!(
+        !records.is_empty(),
+        "No records found in {}",
+        cfg.path.display()
+    );
+
+    let selected: Vec<(usize, &rommy::parser::RommyRecord)> =
+        if let Some(record_number) = cfg.record {
+            anyhow::ensure!(record_number > 0, "--record must be >= 1");
+            let idx = record_number - 1;
+            anyhow::ensure!(
+                idx < records.len(),
+                "--record {} is out of range (1..={})",
+                record_number,
+                records.len()
+            );
+            vec![(record_number, &records[idx])]
+        } else {
+            records
+                .iter()
+                .enumerate()
+                .map(|(i, r)| (i + 1, r))
+                .collect()
+        };
+
+    match cfg.format {
+        ShowFormat::Text => {
+            for (i, (record_index, record)) in selected.iter().enumerate() {
+                if i > 0 {
+                    println!();
+                }
+                print_record_text(*record_index, record);
+            }
+        }
+        ShowFormat::Json => {
+            let items: Vec<_> = selected
+                .into_iter()
+                .map(|(record_index, record)| {
+                    json!({
+                        "record": record_index,
+                        "meta": record.meta,
+                        "command": record.command,
+                        "stdout": record.stdout,
+                        "stderr": record.stderr,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "path": cfg.path.display().to_string(),
+                    "records": items,
+                }))?
+            );
+        }
+    }
+
     Ok(())
 }
 
