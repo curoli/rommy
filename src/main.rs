@@ -191,37 +191,38 @@ fn lock_path(out_path: &Path) -> PathBuf {
     lock
 }
 
-fn write_record(
-    f: &mut fs::File,
-    rommy_version: &str,
-    label: Option<&str>,
-    cwd_abs: &Path,
-    user: Option<&str>,
-    host: Option<&str>,
-    display_command: &RommyCommand,
-    start: &DateTime<Utc>,
-    end: &DateTime<Utc>,
+struct RecordData<'a> {
+    rommy_version: &'a str,
+    label: Option<&'a str>,
+    cwd_abs: &'a Path,
+    user: Option<&'a str>,
+    host: Option<&'a str>,
+    display_command: &'a RommyCommand,
+    start: &'a DateTime<Utc>,
+    end: &'a DateTime<Utc>,
     duration_ms: i64,
-    out_path: &Path,
-    status_str: &str,
+    out_path: &'a Path,
+    status_str: &'a str,
     exit_code: i32,
-    stdout_bytes: &[u8],
-    stderr_bytes: &[u8],
-) -> Result<()> {
+    stdout_bytes: &'a [u8],
+    stderr_bytes: &'a [u8],
+}
+
+fn write_record(f: &mut fs::File, data: &RecordData<'_>) -> Result<()> {
     // META
     writeln!(f, "<<<META>>>")?;
-    writeln!(f, "rommy_version: {}", rommy_version)?;
-    if let Some(label) = label {
+    writeln!(f, "rommy_version: {}", data.rommy_version)?;
+    if let Some(label) = data.label {
         writeln!(f, "label: {}", label)?;
     }
-    writeln!(f, "cwd: {}", cwd_abs.display())?;
-    if let Some(user) = user {
+    writeln!(f, "cwd: {}", data.cwd_abs.display())?;
+    if let Some(user) = data.user {
         writeln!(f, "user: {}", user)?;
     }
-    if let Some(host) = host {
+    if let Some(host) = data.host {
         writeln!(f, "host: {}", host)?;
     }
-    match display_command {
+    match data.display_command {
         RommyCommand::Script { path, .. } => {
             writeln!(f, "script_path: {}", path.display())?;
         }
@@ -229,17 +230,17 @@ fn write_record(
             writeln!(f, "command_line: {}", line)?;
         }
     }
-    writeln!(f, "start_ts: {}", start.to_rfc3339())?;
-    writeln!(f, "end_ts: {}", end.to_rfc3339())?;
-    writeln!(f, "duration_ms: {}", duration_ms)?;
-    writeln!(f, "output_path: {}", out_path.display())?;
-    writeln!(f, "status: {}", status_str)?;
-    writeln!(f, "exit_code: {}", exit_code)?;
+    writeln!(f, "start_ts: {}", data.start.to_rfc3339())?;
+    writeln!(f, "end_ts: {}", data.end.to_rfc3339())?;
+    writeln!(f, "duration_ms: {}", data.duration_ms)?;
+    writeln!(f, "output_path: {}", data.out_path.display())?;
+    writeln!(f, "status: {}", data.status_str)?;
+    writeln!(f, "exit_code: {}", data.exit_code)?;
     writeln!(f, "<<<END>>>")?;
 
     // COMMAND
     writeln!(f, "<<<COMMAND>>>")?;
-    match display_command {
+    match data.display_command {
         RommyCommand::Script { content, .. } => {
             f.write_all(content.as_bytes())?;
         }
@@ -251,16 +252,16 @@ fn write_record(
 
     // STDOUT
     writeln!(f, "<<<STDOUT>>>")?;
-    f.write_all(stdout_bytes)?;
-    if !stdout_bytes.is_empty() && !stdout_bytes.ends_with(b"\n") {
+    f.write_all(data.stdout_bytes)?;
+    if !data.stdout_bytes.is_empty() && !data.stdout_bytes.ends_with(b"\n") {
         writeln!(f)?;
     }
     writeln!(f, "<<<END>>>")?;
 
     // STDERR
     writeln!(f, "<<<STDERR>>>")?;
-    f.write_all(stderr_bytes)?;
-    if !stderr_bytes.is_empty() && !stderr_bytes.ends_with(b"\n") {
+    f.write_all(data.stderr_bytes)?;
+    if !data.stderr_bytes.is_empty() && !data.stderr_bytes.ends_with(b"\n") {
         writeln!(f)?;
     }
     writeln!(f, "<<<END>>>")?;
@@ -383,6 +384,7 @@ fn run(cfg: RunConfig) -> Result<()> {
     let lock_file = OpenOptions::new()
         .create(true)
         .write(true)
+        .truncate(false)
         .open(&lock_path)
         .with_context(|| format!("Cannot open lock file {}", lock_path.display()))?;
     lock_file
@@ -392,6 +394,22 @@ fn run(cfg: RunConfig) -> Result<()> {
     let cwd_abs = fs::canonicalize(&cwd_path)
         .with_context(|| format!("Cannot resolve cwd {}", cwd_path.display()))?;
     let label = cfg.label.as_deref();
+    let record_data = RecordData {
+        rommy_version: &rommy_version,
+        label,
+        cwd_abs: &cwd_abs,
+        user: user.as_deref(),
+        host: host.as_deref(),
+        display_command: &display_command,
+        start: &start,
+        end: &end,
+        duration_ms,
+        out_path: &out_path,
+        status_str,
+        exit_code,
+        stdout_bytes: &stdout_bytes,
+        stderr_bytes: &stderr_bytes,
+    };
 
     let tmp_path = temp_out_path(&out_path);
     let write_result = (|| -> Result<()> {
@@ -416,23 +434,7 @@ fn run(cfg: RunConfig) -> Result<()> {
             }
         }
 
-        write_record(
-            &mut temp,
-            &rommy_version,
-            label,
-            &cwd_abs,
-            user.as_deref(),
-            host.as_deref(),
-            &display_command,
-            &start,
-            &end,
-            duration_ms,
-            &out_path,
-            status_str,
-            exit_code,
-            &stdout_bytes,
-            &stderr_bytes,
-        )?;
+        write_record(&mut temp, &record_data)?;
 
         temp.sync_all()
             .with_context(|| format!("Cannot sync {}", tmp_path.display()))?;
@@ -457,7 +459,7 @@ fn run(cfg: RunConfig) -> Result<()> {
         let _ = fs::remove_file(&tmp_path);
         return Err(err);
     }
-    lock_file.unlock().ok();
+    drop(lock_file);
 
     rommy_note_cyan(colors, &format!("Wrote {}", out_path.display()));
     Ok(())
