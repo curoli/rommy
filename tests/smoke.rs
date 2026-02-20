@@ -1,6 +1,7 @@
 use rommy::parser::parse_file;
 use std::fs;
 use std::process::Command;
+use std::thread;
 
 #[test]
 fn rommy_basic_run_produces_valid_blocks() {
@@ -104,4 +105,49 @@ fn rommy_append_writes_two_records() {
         recs[1].stdout.contains("second"),
         "Second record missing output"
     );
+}
+
+#[test]
+fn rommy_parallel_append_preserves_all_records() {
+    let out_path = "target/tmp/append_parallel_test.rommy";
+    let _ = fs::remove_file(out_path);
+    let bin = env!("CARGO_BIN_EXE_rommy");
+    const N: usize = 6;
+
+    let handles: Vec<_> = (0..N)
+        .map(|i| {
+            thread::spawn(move || {
+                let msg = format!("par-{i}");
+                Command::new(bin)
+                    .args([
+                        "run",
+                        "--append",
+                        "--out",
+                        out_path,
+                        "--",
+                        "echo",
+                        msg.as_str(),
+                    ])
+                    .status()
+            })
+        })
+        .collect();
+
+    for h in handles {
+        let status = h
+            .join()
+            .expect("append thread panicked")
+            .expect("run failed");
+        assert!(status.success(), "parallel append run failed");
+    }
+
+    let recs = parse_file(out_path).expect("Failed to parse parallel append file");
+    assert_eq!(recs.len(), N, "Expected one record per parallel append");
+    for i in 0..N {
+        let expected = format!("par-{i}");
+        assert!(
+            recs.iter().any(|r| r.stdout.contains(&expected)),
+            "Missing output for {expected}"
+        );
+    }
 }

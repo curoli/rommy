@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
+use fs2::FileExt;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
@@ -166,6 +167,16 @@ fn temp_out_path(out_path: &Path) -> PathBuf {
     let mut tmp = out_path.to_path_buf();
     tmp.set_file_name(format!(".{base}.{pid}.{nanos}.tmp"));
     tmp
+}
+
+fn lock_path(out_path: &Path) -> PathBuf {
+    let mut lock = out_path.to_path_buf();
+    let base = out_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("rommy.rommy");
+    lock.set_file_name(format!(".{base}.lock"));
+    lock
 }
 
 fn write_record(
@@ -356,6 +367,16 @@ fn run(cfg: RunConfig) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("Cannot create directory {}", parent.display()))?;
     }
+    let lock_path = lock_path(&out_path);
+    let lock_file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("Cannot open lock file {}", lock_path.display()))?;
+    lock_file
+        .lock_exclusive()
+        .with_context(|| format!("Cannot acquire lock {}", lock_path.display()))?;
+
     let cwd_abs = fs::canonicalize(&cwd_path)
         .with_context(|| format!("Cannot resolve cwd {}", cwd_path.display()))?;
     let label = cfg.label.as_deref();
@@ -424,6 +445,7 @@ fn run(cfg: RunConfig) -> Result<()> {
         let _ = fs::remove_file(&tmp_path);
         return Err(err);
     }
+    lock_file.unlock().ok();
 
     rommy_note_cyan(colors, &format!("Wrote {}", out_path.display()));
     Ok(())
