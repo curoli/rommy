@@ -63,6 +63,20 @@ Runs the command, streams live output to the terminal, and stores everything aut
   <<<END>>>
   ```
 
+- ✅ **Validation command**
+  Validate one or more files/directories with text or JSON output:
+
+  ```bash
+  rommy validate logs/ --format json
+  ```
+
+- 🔎 **Show command**
+  Read and display `.rommy` records in text or JSON format:
+
+  ```bash
+  rommy show logs/run.rommy --record 1 --format text
+  ```
+
 ---
 
 ## 🚀 Installation
@@ -120,6 +134,30 @@ rommy run --out results/mytest.rommy -- cargo test
 rommy run --no-stream -- cargo check
 ```
 
+### 6️⃣ Validate logs (text output)
+
+```bash
+rommy validate target/tmp
+```
+
+### 7️⃣ Validate logs (JSON output, quiet text equivalent)
+
+```bash
+rommy validate target/tmp --format json
+```
+
+### 8️⃣ Show all records from one file
+
+```bash
+rommy show target/tmp/append_test.rommy
+```
+
+### 9️⃣ Show one selected record as JSON
+
+```bash
+rommy show target/tmp/append_test.rommy --record 2 --format json
+```
+
 ---
 
 ## 📂 File format
@@ -140,6 +178,23 @@ test result: ok. 3 passed; 0 failed;
 <<<STDERR>>>
 <<<END>>>
 ```
+
+---
+
+## 🧪 Validation and Exit Codes
+
+- `rommy validate` returns exit code `0` if all matched files are valid.
+- It returns non-zero if at least one file is invalid, path discovery fails, or no files are found.
+- `--quiet` suppresses per-file `OK` lines in text mode.
+- `--format json` emits machine-readable results while preserving exit-code behavior.
+
+---
+
+## 🔒 Concurrency and Writes
+
+- Rommy writes through a temporary file and atomic rename to reduce partial/corrupt outputs.
+- For concurrent writers targeting the same output file, Rommy uses a lock file (`.<name>.lock`) to serialize writes.
+- `--append` uses copy-on-write + atomic replace under that lock, so appended records remain consistent.
 
 ---
 
