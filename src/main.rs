@@ -1,12 +1,13 @@
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, Args, ValueEnum};
 use chrono::{DateTime, Utc};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::path::PathBuf;
-use std::process::{Command, Stdio, Child};
-use std::io::{self, Write, IsTerminal, Read};
+use std::io::{self, IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::scratch::launch_editor_and_get_script;
 
@@ -14,24 +15,28 @@ mod outpath;
 mod scratch;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum ColorChoice { Auto, Always, Never }
+pub enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
 
-const CYAN: &str   = "\x1b[36m";
+const CYAN: &str = "\x1b[36m";
 const YELLOW: &str = "\x1b[33m";
-const RESET: &str  = "\x1b[0m";
+const RESET: &str = "\x1b[0m";
 
 #[derive(Args, Debug, Clone)]
 pub struct RunConfig {
     /// Output file (optional; if omitted, Rommy chooses a time-based path)
-    #[arg(long, value_name="FILE")]
+    #[arg(long, value_name = "FILE")]
     pub out: Option<PathBuf>,
 
     /// Working directory
-    #[arg(long, value_name="DIR")]
+    #[arg(long, value_name = "DIR")]
     pub cwd: Option<PathBuf>,
 
     /// Provide KEY=VALUE environment pairs (repeatable)
-    #[arg(long="env", value_name="KEY=VALUE")]
+    #[arg(long = "env", value_name = "KEY=VALUE")]
     pub envs: Vec<String>,
 
     /// Append instead of overwrite
@@ -43,24 +48,24 @@ pub struct RunConfig {
     pub label: Option<String>,
 
     /// Run given bash script file instead of a single command
-    #[arg(long, value_name="SCRIPT.sh", conflicts_with="cmd")]
+    #[arg(long, value_name = "SCRIPT.sh", conflicts_with = "cmd")]
     pub script: Option<PathBuf>,
 
     /// Disable live streaming to terminal (default: streaming ON)
-    #[arg(long="no-stream")]
+    #[arg(long = "no-stream")]
     pub no_stream: bool,
 
     /// Command to run (after --). Example: rommy run -- cargo test
     #[arg(last = true)]
     pub cmd: Vec<String>,
-    
+
     /// Color output: auto|always|never (default: auto)
     #[arg(long = "color", value_enum, default_value_t = ColorChoice::Auto)]
     pub color: ColorChoice,
 }
 
 #[derive(Parser, Debug)]
-#[command(name="rommy")]
+#[command(name = "rommy")]
 pub struct Cli {
     #[command(subcommand)]
     pub cmd: Commands,
@@ -77,9 +82,7 @@ pub enum Commands {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.cmd {
-        Commands::Run { run_config } => {
-            run(run_config)
-        }
+        Commands::Run { run_config } => run(run_config),
     }
 }
 
@@ -87,9 +90,11 @@ fn main() -> Result<()> {
 /// - stream=true: stdout/stderr werden live ins Terminal gespiegelt UND gesammelt.
 /// - stream=false: stdout/stderr werden vollständig gesammelt (keine Terminalausgabe).
 ///   Rückgabe: (stdout_bytes, stderr_bytes, exit_code)
-fn spawn_and_stream(mut child: Child, stream: bool, colors: bool)
-    -> anyhow::Result<(Vec<u8>, Vec<u8>, i32)>
-{
+fn spawn_and_stream(
+    mut child: Child,
+    stream: bool,
+    colors: bool,
+) -> anyhow::Result<(Vec<u8>, Vec<u8>, i32)> {
     fn tee<R: Read + Send + 'static, W: Write + Send + 'static>(
         mut r: R,
         mut w: W,
@@ -132,8 +137,12 @@ fn spawn_and_stream(mut child: Child, stream: bool, colors: bool)
         let status = child.wait()?;
         let code = status.code().unwrap_or(-1);
 
-        let stdout_bytes = h_out.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
-        let stderr_bytes = h_err.map(|h| h.join().unwrap_or_default()).unwrap_or_default();
+        let stdout_bytes = h_out
+            .map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default();
+        let stderr_bytes = h_err
+            .map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default();
 
         Ok((stdout_bytes, stderr_bytes, code))
     } else {
@@ -142,6 +151,98 @@ fn spawn_and_stream(mut child: Child, stream: bool, colors: bool)
         let code = output.status.code().unwrap_or(-1);
         Ok((output.stdout, output.stderr, code))
     }
+}
+
+fn temp_out_path(out_path: &Path) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let pid = std::process::id();
+    let base = out_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("rommy.rommy");
+    let mut tmp = out_path.to_path_buf();
+    tmp.set_file_name(format!(".{base}.{pid}.{nanos}.tmp"));
+    tmp
+}
+
+fn write_record(
+    f: &mut fs::File,
+    rommy_version: &str,
+    label: Option<&str>,
+    cwd_abs: &Path,
+    user: Option<&str>,
+    host: Option<&str>,
+    display_command: &RommyCommand,
+    start: &DateTime<Utc>,
+    end: &DateTime<Utc>,
+    duration_ms: i64,
+    out_path: &Path,
+    status_str: &str,
+    exit_code: i32,
+    stdout_bytes: &[u8],
+    stderr_bytes: &[u8],
+) -> Result<()> {
+    // META
+    writeln!(f, "<<<META>>>")?;
+    writeln!(f, "rommy_version: {}", rommy_version)?;
+    if let Some(label) = label {
+        writeln!(f, "label: {}", label)?;
+    }
+    writeln!(f, "cwd: {}", cwd_abs.display())?;
+    if let Some(user) = user {
+        writeln!(f, "user: {}", user)?;
+    }
+    if let Some(host) = host {
+        writeln!(f, "host: {}", host)?;
+    }
+    match display_command {
+        RommyCommand::Script { path, .. } => {
+            writeln!(f, "script_path: {}", path.display())?;
+        }
+        RommyCommand::Line(line) => {
+            writeln!(f, "command_line: {}", line)?;
+        }
+    }
+    writeln!(f, "start_ts: {}", start.to_rfc3339())?;
+    writeln!(f, "end_ts: {}", end.to_rfc3339())?;
+    writeln!(f, "duration_ms: {}", duration_ms)?;
+    writeln!(f, "output_path: {}", out_path.display())?;
+    writeln!(f, "status: {}", status_str)?;
+    writeln!(f, "exit_code: {}", exit_code)?;
+    writeln!(f, "<<<END>>>")?;
+
+    // COMMAND
+    writeln!(f, "<<<COMMAND>>>")?;
+    match display_command {
+        RommyCommand::Script { content, .. } => {
+            f.write_all(content.as_bytes())?;
+        }
+        RommyCommand::Line(line) => {
+            writeln!(f, "$ {}", line)?;
+        }
+    }
+    writeln!(f, "<<<END>>>")?;
+
+    // STDOUT
+    writeln!(f, "<<<STDOUT>>>")?;
+    f.write_all(stdout_bytes)?;
+    if !stdout_bytes.is_empty() && !stdout_bytes.ends_with(b"\n") {
+        writeln!(f)?;
+    }
+    writeln!(f, "<<<END>>>")?;
+
+    // STDERR
+    writeln!(f, "<<<STDERR>>>")?;
+    f.write_all(stderr_bytes)?;
+    if !stderr_bytes.is_empty() && !stderr_bytes.ends_with(b"\n") {
+        writeln!(f)?;
+    }
+    writeln!(f, "<<<END>>>")?;
+
+    Ok(())
 }
 
 fn run(cfg: RunConfig) -> Result<()> {
@@ -158,7 +259,7 @@ fn run(cfg: RunConfig) -> Result<()> {
     } else {
         None
     };
-    
+
     // Build command invocation
     let (display_command, exec) = if let Some(script_path) = &script {
         let script_abs = fs::canonicalize(script_path)
@@ -166,10 +267,7 @@ fn run(cfg: RunConfig) -> Result<()> {
         let script_text = fs::read_to_string(&script_abs)
             .with_context(|| format!("Cannot read script: {}", script_abs.display()))?;
 
-        let display = format!(
-            "#!/usr/bin/env bash\n{}\n",
-            script_text
-        );
+        let display = format!("#!/usr/bin/env bash\n{}\n", script_text);
 
         // Execute bash with -Eeuo pipefail for safety & clear failures
         let mut command = Command::new("bash");
@@ -182,9 +280,18 @@ fn run(cfg: RunConfig) -> Result<()> {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        (RommyCommand::Script { path: script_abs, content: display }, command)
+        (
+            RommyCommand::Script {
+                path: script_abs,
+                content: display,
+            },
+            command,
+        )
     } else {
-        anyhow::ensure!(!cfg.cmd.is_empty(), "Provide either --script <file> or a command after --");
+        anyhow::ensure!(
+            !cfg.cmd.is_empty(),
+            "Provide either --script <file> or a command after --"
+        );
         let bash_line = shell_join(&cfg.cmd)?;
         let mut command = Command::new("bash");
         command
@@ -203,36 +310,32 @@ fn run(cfg: RunConfig) -> Result<()> {
         if let Some((k, v)) = kv.split_once('=') {
             command.env(k, v);
         } else {
-            eprintln!("WARN: ignoring malformed --env '{}', expected KEY=VALUE", kv);
+            eprintln!(
+                "WARN: ignoring malformed --env '{}', expected KEY=VALUE",
+                kv
+            );
         }
     }
 
     // Collect metadata
     let rommy_version = env!("CARGO_PKG_VERSION").to_string();
-    let user = whoami::username();
-    let host = whoami::hostname();
+    let user = whoami::username().ok();
+    let host = whoami::hostname().ok();
 
-    // ... du hast vorher schon `command` gebaut (bash -lc ... oder script), gut!
-    
-    // WICHTIG: Pipes setzen, sonst gibt es nichts zu lesen
-    // WICHTIG: Pipes setzen – für den Streaming-Pfad nötig.
-    // Für den no-stream-Pfad stört es nicht; wait_with_output() funktioniert weiterhin.
+    // Ensure output pipes are always configured for both streaming and capture mode.
     command.stdout(Stdio::piped()).stderr(Stdio::piped());
-    
+
     let start: DateTime<Utc> = Utc::now();
     let child = command.spawn().with_context(|| "Failed to spawn process")?;
-    
-    // stream = !no_stream (so wie du es aktuell ableitest)
-    let (stdout_bytes, stderr_bytes, exit_code) = spawn_and_stream(child, stream, colors)
-        .with_context(|| "stream/capture failed")?;
-    
+
+    let (stdout_bytes, stderr_bytes, exit_code) =
+        spawn_and_stream(child, stream, colors).with_context(|| "stream/capture failed")?;
+
     let end: DateTime<Utc> = Utc::now();
     let duration_ms = (end - start).num_milliseconds();
-    
+
     let status_str = if exit_code == 0 { "ok" } else { "error" };
-    let stdout_txt = String::from_utf8_lossy(&stdout_bytes);
-    let stderr_txt = String::from_utf8_lossy(&stderr_bytes);
-    
+
     // Bestimme Ausgabedatei
     let out_path: PathBuf = if let Some(explicit) = cfg.out {
         explicit
@@ -246,69 +349,82 @@ fn run(cfg: RunConfig) -> Result<()> {
             .context("failed to resolve automatic output path")?
     };
 
-    
     // Prepare writer
     if let Some(parent) = out_path.parent()
-        && !parent.exists() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("Cannot create directory {}", parent.display()))?;
-        }
-    let mut f = OpenOptions::new()
-        .create(true)
-        .write(true)
-        .append(cfg.append)
-        .truncate(!cfg.append)
-        .open(&out_path)
-        .with_context(|| format!("Cannot open {}", out_path.display()))?;
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create directory {}", parent.display()))?;
+    }
+    let cwd_abs = fs::canonicalize(&cwd_path)
+        .with_context(|| format!("Cannot resolve cwd {}", cwd_path.display()))?;
+    let label = cfg.label.as_deref();
 
-    // --- Write blocks ---
-    // META
-    writeln!(f, "<<<META>>>")?;
-    writeln!(f, "rommy_version: {}", rommy_version)?;
-    if let Some(label) = cfg.label { writeln!(f, "label: {}", label)?; }
-    writeln!(f, "cwd: {}", fs::canonicalize(&cwd_path)?.display())?;
-    if let Ok(user) = user {
-        writeln!(f, "user: {}", user)?;        
-    }
-    if let Ok(host) = host {
-        writeln!(f, "host: {}", host)?;        
-    }
-    match &display_command {
-        RommyCommand::Script { path, .. } => {
-            writeln!(f, "script_path: {}", path.display())?;
-        }
-        RommyCommand::Line(line) => {
-            writeln!(f, "command_line: {}", line)?;
-        }
-    }
-    writeln!(f, "start_ts: {}", start.to_rfc3339())?;
-    writeln!(f, "end_ts: {}", end.to_rfc3339())?;
-    writeln!(f, "duration_ms: {}", duration_ms)?;
-    writeln!(f, "output_path: {}", out_path.display())?;
-    writeln!(f, "status: {}", status_str)?;
-    writeln!(f, "exit_code: {}", exit_code)?;
-    writeln!(f, "<<<END>>>")?;
+    let tmp_path = temp_out_path(&out_path);
+    let write_result = (|| -> Result<()> {
+        let mut temp = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&tmp_path)
+            .with_context(|| format!("Cannot create {}", tmp_path.display()))?;
 
-    // COMMAND
-    writeln!(f, "<<<COMMAND>>>")?;
-    match &display_command {
-        RommyCommand::Script { content, .. } => {
-            f.write_all(content.as_bytes())?;
+        if cfg.append {
+            // Best effort atomic append: copy old file into temp first, then append new record.
+            match fs::File::open(&out_path) {
+                Ok(mut current) => {
+                    io::copy(&mut current, &mut temp).with_context(|| {
+                        format!("Cannot copy existing content from {}", out_path.display())
+                    })?;
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(e).with_context(|| format!("Cannot open {}", out_path.display()));
+                }
+            }
         }
-        RommyCommand::Line(line) => {
-            writeln!(f, "$ {}", line)?;
-        }
-    }
-    writeln!(f, "<<<END>>>")?;
 
-    // STDOUT
-    writeln!(f, "<<<STDOUT>>>")?;
-    f.write_all(stdout_txt.as_bytes())?;
-    writeln!(f, "<<<END>>>")?;
-    
-    writeln!(f, "<<<STDERR>>>")?;
-    f.write_all(stderr_txt.as_bytes())?;
-    writeln!(f, "<<<END>>>")?;
+        write_record(
+            &mut temp,
+            &rommy_version,
+            label,
+            &cwd_abs,
+            user.as_deref(),
+            host.as_deref(),
+            &display_command,
+            &start,
+            &end,
+            duration_ms,
+            &out_path,
+            status_str,
+            exit_code,
+            &stdout_bytes,
+            &stderr_bytes,
+        )?;
+
+        temp.sync_all()
+            .with_context(|| format!("Cannot sync {}", tmp_path.display()))?;
+
+        #[cfg(windows)]
+        if out_path.exists() {
+            fs::remove_file(&out_path)
+                .with_context(|| format!("Cannot replace {}", out_path.display()))?;
+        }
+
+        fs::rename(&tmp_path, &out_path).with_context(|| {
+            format!(
+                "Cannot atomically move {} to {}",
+                tmp_path.display(),
+                out_path.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    if let Err(err) = write_result {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(err);
+    }
+
     rommy_note_cyan(colors, &format!("Wrote {}", out_path.display()));
     Ok(())
 }
@@ -323,7 +439,9 @@ enum RommyCommand {
 fn shell_join<S: AsRef<OsStr>>(parts: &[S]) -> Result<String> {
     let mut out = String::new();
     for (i, p) in parts.iter().enumerate() {
-        if i > 0 { out.push(' '); }
+        if i > 0 {
+            out.push(' ');
+        }
         out.push_str(&shell_escape(p.as_ref()));
     }
     Ok(out)
@@ -347,13 +465,21 @@ fn shell_escape(s: &OsStr) -> String {
 
 fn color_is_enabled(choice: ColorChoice) -> bool {
     // Respect NO_COLOR, CLICOLOR, CLICOLOR_FORCE, and TTY
-    if std::env::var_os("NO_COLOR").is_some() { return false; }
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
     match choice {
         ColorChoice::Always => true,
-        ColorChoice::Never  => false,
+        ColorChoice::Never => false,
         ColorChoice::Auto => {
-            if std::env::var_os("CLICOLOR_FORCE").is_some() { return true; }
-            if let Ok(v) = std::env::var("CLICOLOR") && v == "0" { return false; }            
+            if std::env::var_os("CLICOLOR_FORCE").is_some() {
+                return true;
+            }
+            if let Ok(v) = std::env::var("CLICOLOR")
+                && v == "0"
+            {
+                return false;
+            }
             io::stderr().is_terminal() || io::stdout().is_terminal()
         }
     }

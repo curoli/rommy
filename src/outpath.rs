@@ -1,5 +1,8 @@
 use chrono::Local;
-use std::{env, fs, path::{Path, PathBuf}};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 /// Ermittle das Default-Root-Verzeichnis für Rommy-Outputs.
 pub fn default_root_dir() -> PathBuf {
@@ -15,7 +18,8 @@ pub fn default_root_dir() -> PathBuf {
 
     // 3) OS-spezifische Defaults
     if cfg!(target_os = "macos") {
-        return home_dir().unwrap_or_else(|| PathBuf::from("~"))
+        return home_dir()
+            .unwrap_or_else(|| PathBuf::from("~"))
             .join("Library")
             .join("Application Support")
             .join("Rommy");
@@ -26,7 +30,10 @@ pub fn default_root_dir() -> PathBuf {
             return Path::new(&appdata).join("Rommy");
         }
         if let Ok(userprofile) = env::var("USERPROFILE") {
-            return Path::new(&userprofile).join("AppData").join("Local").join("Rommy");
+            return Path::new(&userprofile)
+                .join("AppData")
+                .join("Local")
+                .join("Rommy");
         }
     }
 
@@ -44,9 +51,9 @@ pub fn resolve_auto_out_path(cmd_display: &str) -> std::io::Result<PathBuf> {
     let root = default_root_dir();
     let now = Local::now();
     let yyyy = now.format("%Y").to_string();
-    let mm   = now.format("%m").to_string();
-    let dd   = now.format("%d").to_string();
-    let hms  = now.format("%H%M%S").to_string();
+    let mm = now.format("%m").to_string();
+    let dd = now.format("%d").to_string();
+    let hms = now.format("%H%M%S").to_string();
 
     let token = command_token(cmd_display);
     let file = format!("{hms}.{token}.rommy");
@@ -90,7 +97,11 @@ fn command_token(s: &str) -> String {
     }
     let clean = clean.trim_matches('_').to_lowercase();
 
-    let mut final_token = if clean.is_empty() { "cmd".to_string() } else { clean };
+    let mut final_token = if clean.is_empty() {
+        "cmd".to_string()
+    } else {
+        clean
+    };
     if final_token.len() > 32 {
         final_token.truncate(32);
     }
@@ -106,7 +117,9 @@ fn command_token(s: &str) -> String {
 fn home_dir() -> Option<PathBuf> {
     // Minimaler Home-Sucher ohne externe Crate
     if cfg!(target_os = "windows") {
-        env::var("USERPROFILE").ok().map(PathBuf::from)
+        env::var("USERPROFILE")
+            .ok()
+            .map(PathBuf::from)
             .or_else(|| env::var("HOME").ok().map(PathBuf::from))
     } else {
         env::var("HOME").ok().map(PathBuf::from)

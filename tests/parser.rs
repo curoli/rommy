@@ -71,8 +71,34 @@ B
     assert_eq!(recs[0].stdout.trim(), "A");
     assert!(recs[0].stderr.trim().is_empty());
 
-    assert_eq!(recs[1].meta.get("status").map(String::as_str), Some("error"));
+    assert_eq!(
+        recs[1].meta.get("status").map(String::as_str),
+        Some("error")
+    );
     assert_eq!(recs[1].meta.get("exit_code").map(String::as_str), Some("2"));
     assert_eq!(recs[1].stderr.trim(), "B");
     assert!(recs[1].stdout.trim().is_empty());
+}
+
+#[test]
+fn parse_incomplete_record_fails() {
+    let sample = r#"<<<META>>>
+rommy_version: 0.1.0
+status: ok
+exit_code: 0
+<<<END>>>
+<<<COMMAND>>>
+$ echo A
+<<<END>>>
+<<<STDOUT>>>
+A
+<<<END>>>
+"#;
+
+    let err = parse_str(sample).expect_err("parse should fail for incomplete record");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("missing block(s): STDERR"),
+        "unexpected parser error: {msg}"
+    );
 }

@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -66,29 +66,55 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
 
     // Hilfsclosure: neuen leeren Record vorbereiten
     let start_record = |cur_meta: &mut Option<HashMap<String, String>>,
-                            cur_cmd: &mut String,
-                            cur_stdout: &mut String,
-                            cur_stderr: &mut String| {
+                        cur_cmd: &mut String,
+                        cur_stdout: &mut String,
+                        cur_stderr: &mut String| {
         *cur_meta = Some(HashMap::new());
         cur_cmd.clear();
         cur_stdout.clear();
         cur_stderr.clear();
     };
 
+    // Welche Blöcke wurden im aktuellen Record korrekt mit <<<END>>> abgeschlossen?
+    let mut saw_meta = false;
+    let mut saw_command = false;
+    let mut saw_stdout = false;
+    let mut saw_stderr = false;
+
     // Hilfsclosure: aktuellen Record beenden und pushen
     let finish_record = |cur_meta: &mut Option<HashMap<String, String>>,
-                             cur_cmd: &mut String,
-                             cur_stdout: &mut String,
-                             cur_stderr: &mut String,
-                             out: &mut Vec<RommyRecord>| -> Result<()> {
+                         cur_cmd: &mut String,
+                         cur_stdout: &mut String,
+                         cur_stderr: &mut String,
+                         saw_meta: bool,
+                         saw_command: bool,
+                         saw_stdout: bool,
+                         saw_stderr: bool,
+                         out: &mut Vec<RommyRecord>|
+     -> Result<()> {
         let meta = cur_meta
             .take()
             .context("unexpected end of record: META missing")?;
-        // Validierung: alle vier Blöcke müssen einmal aufgetreten sein.
-        // COMMAND/STDOUT/STDERR dürfen leer sein, aber existieren.
-        // Wir erkennen Existenz daran, dass wir aus dem jeweiligen Block heraus
-        // einen <<<END>>> gesehen haben. Das erzwingen wir, indem wir nur beim
-        // korrekten Ende hier landen.
+        let mut missing = Vec::new();
+        if !saw_meta {
+            missing.push("META");
+        }
+        if !saw_command {
+            missing.push("COMMAND");
+        }
+        if !saw_stdout {
+            missing.push("STDOUT");
+        }
+        if !saw_stderr {
+            missing.push("STDERR");
+        }
+        if !missing.is_empty() {
+            bail!(
+                "incomplete record: missing block(s): {}",
+                missing.join(", ")
+            );
+        }
+
         out.push(RommyRecord {
             meta,
             command: cur_cmd.clone(),
@@ -97,9 +123,6 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
         });
         Ok(())
     };
-
-    // Hilfsclosure: Start eines neuen Records erkennen
-    let mut saw_any_block_in_this_record = false;
 
     for raw_line in lines {
         let line = raw_line;
@@ -118,6 +141,10 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
                                     &mut cur_cmd,
                                     &mut cur_stdout,
                                     &mut cur_stderr,
+                                    saw_meta,
+                                    saw_command,
+                                    saw_stdout,
+                                    saw_stderr,
                                     &mut out,
                                 )?;
                             }
@@ -127,7 +154,10 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
                                 &mut cur_stdout,
                                 &mut cur_stderr,
                             );
-                            saw_any_block_in_this_record = true;
+                            saw_meta = false;
+                            saw_command = false;
+                            saw_stdout = false;
+                            saw_stderr = false;
                             state = State::InBlock(Block::Meta);
                         }
                         // Erlaube Folgeblöcke, wenn META bereits gesehen wurde
@@ -143,7 +173,10 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
                 }
                 State::InBlock(_) => {
                     // Wir sind noch in einem Block und sehen sofort den nächsten Marker → Formatfehler
-                    bail!("unexpected start of block {:?} before closing previous block", block);
+                    bail!(
+                        "unexpected start of block {:?} before closing previous block",
+                        block
+                    );
                 }
             }
             continue;
@@ -157,15 +190,16 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
                     continue;
                 }
                 State::InBlock(_) => {
+                    match state {
+                        State::InBlock(Block::Meta) => saw_meta = true,
+                        State::InBlock(Block::Command) => saw_command = true,
+                        State::InBlock(Block::Stdout) => saw_stdout = true,
+                        State::InBlock(Block::Stderr) => saw_stderr = true,
+                        State::Idle => {}
+                    }
                     // Ein Block endet; entweder geht's weiter mit nächstem Block,
                     // oder ein neuer Record beginnt (wieder mit META), oder Datei endet.
                     state = State::Idle;
-
-                    // Wenn wir alle 4 Blöcke gesehen haben, sollte als Nächstes META kommen
-                    // oder Datei-Ende. Erkennen wir am nächsten Marker/EOF unten.
-                    // Wir prüfen beim Start des nächsten META, ob vorher COMMAND/STDOUT/STDERR vorhanden waren,
-                    // indem wir auf saw_any_block_in_this_record achten und finalisieren erst beim Start
-                    // des nächsten Records oder am Dateiende (siehe unten).
                 }
             }
             continue;
@@ -214,21 +248,6 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
                 cur_stderr.push_str(line);
             }
         }
-
-        // Wenn wir META gelesen haben und die nächste Zeile kein Marker ist, bleiben wir im Block,
-        // bis <<<END>>> kommt. Die Reihenfolge der Blöcke wird über das Erscheinen der Marker bestimmt.
-        // D. h. der Schreibprozess (Rommy) definiert die Reihenfolge; der Parser ist strikt.
-        // Die Reihenfolge-Validierung geschieht implizit: Ein neuer META ohne vorherige STDOUT/STDERR
-        // würde trotzdem einen Record erzeugen, aber dem fehlen dann Inhalte → das ist okay,
-        // solange der Erzeuger immer alle vier Blöcke schreibt.
-        // (Optional: Man kann hier strengere Checks erzwingen.)
-        //
-        // Den Übergang vom einen zum nächsten Block steuern die Marker, nicht der Parser.
-        // Daher brauchen wir hier keine zusätzliche Logik.
-        //
-        // Abschluss des Records erfolgt am Dateiende oder beim Start des nächsten META (siehe unten).
-        //
-        // → Umsetzung am Ende der Datei.
     }
 
     // Dateiende: Falls wir schon Blöcke gesehen haben, aber der Record nicht finalisiert wurde,
@@ -239,14 +258,16 @@ pub fn parse_str(input: &str) -> Result<Vec<RommyRecord>> {
             bail!("unexpected EOF: block not closed with <<<END>>>");
         }
         State::Idle => {
-            // Wenn wir überhaupt einen Record begonnen haben (saw_any_block_in_this_record),
-            // dann sollten wir bis hierher alle vier Blöcke abgeschlossen haben und können finalisieren.
-            if saw_any_block_in_this_record {
+            if cur_meta.is_some() {
                 finish_record(
                     &mut cur_meta,
                     &mut cur_cmd,
                     &mut cur_stdout,
                     &mut cur_stderr,
+                    saw_meta,
+                    saw_command,
+                    saw_stdout,
+                    saw_stderr,
                     &mut out,
                 )?;
             }

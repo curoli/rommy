@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -15,28 +15,40 @@ fn pick_editor() -> (String, Vec<String>) {
         return (ed, vec![]);
     }
     #[cfg(target_os = "windows")]
-    { return ("notepad".to_string(), vec![]); }
+    {
+        return ("notepad".to_string(), vec![]);
+    }
     #[cfg(not(target_os = "windows"))]
-    { ("nano".to_string(), vec![]) }
+    {
+        ("nano".to_string(), vec![])
+    }
 }
 
 /// Add “wait” flags for GUI editors that otherwise detach.
 fn editor_wait_args(editor_cmd: &str) -> Vec<String> {
     let e = editor_cmd.to_lowercase();
-    if e.contains("code") || e.contains("codium") { return vec!["--wait".into()]; }
-    if e.contains("subl") || e.contains("sublime_text") { return vec!["-w".into()]; }
-    if e.contains("gedit") { return vec!["--wait".into()]; }
+    if e.contains("code") || e.contains("codium") {
+        return vec!["--wait".into()];
+    }
+    if e.contains("subl") || e.contains("sublime_text") {
+        return vec!["-w".into()];
+    }
+    if e.contains("gedit") {
+        return vec!["--wait".into()];
+    }
     vec![]
 }
 
 /// Create a temporary, executable bash script with a safe template.
 fn write_scratch_script(path: &Path) -> std::io::Result<()> {
     let mut f = File::create(path)?;
-    f.write_all(br#"#!/usr/bin/env bash
+    f.write_all(
+        br#"#!/usr/bin/env bash
 set -Eeuo pipefail
 # Rommy scratch script: write your commands below, then save & close the editor.
 echo "Hello from Rommy scratch!"
-"#)?;
+"#,
+    )?;
     f.flush()?;
 
     // Make executable on Unix

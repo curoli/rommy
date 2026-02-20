@@ -55,7 +55,12 @@ echo "Another stdout line"
     let content = fs::read_to_string(&out_path)
         .unwrap_or_else(|e| panic!("Failed to read output file {out_path}: {e}"));
 
-    for block in ["<<<META>>>", "<<<COMMAND>>>", "<<<STDOUT>>>", "<<<STDERR>>>"] {
+    for block in [
+        "<<<META>>>",
+        "<<<COMMAND>>>",
+        "<<<STDOUT>>>",
+        "<<<STDERR>>>",
+    ] {
         assert!(
             content.contains(block),
             "Output does not contain expected block marker: {}",
