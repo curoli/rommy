@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fs2::FileExt;
+use serde_json::json;
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
@@ -89,6 +90,20 @@ pub struct ValidateConfig {
     /// File(s) or directory path(s) to validate
     #[arg(value_name = "PATH", required = true)]
     pub paths: Vec<PathBuf>,
+
+    /// Suppress per-file OK lines in text output
+    #[arg(long)]
+    pub quiet: bool,
+
+    /// Output format
+    #[arg(long, value_enum, default_value_t = ValidateFormat::Text)]
+    pub format: ValidateFormat,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum ValidateFormat {
+    Text,
+    Json,
 }
 
 fn main() -> Result<()> {
@@ -495,6 +510,12 @@ fn collect_rommy_files(path: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 fn validate(cfg: ValidateConfig) -> Result<()> {
+    struct ValidationEntry {
+        path: String,
+        records: Option<usize>,
+        error: Option<String>,
+    }
+
     let mut files = Vec::new();
     for path in &cfg.paths {
         collect_rommy_files(path, &mut files)?;
@@ -507,17 +528,69 @@ fn validate(cfg: ValidateConfig) -> Result<()> {
 
     let mut ok_count = 0usize;
     let mut err_count = 0usize;
+    let mut entries = Vec::with_capacity(files.len());
 
     for file in &files {
         match rommy::parser::parse_file(file) {
             Ok(records) => {
-                println!("OK {} ({} record(s))", file.display(), records.len());
                 ok_count += 1;
+                entries.push(ValidationEntry {
+                    path: file.display().to_string(),
+                    records: Some(records.len()),
+                    error: None,
+                });
             }
             Err(err) => {
-                eprintln!("ERR {}: {}", file.display(), err);
                 err_count += 1;
+                entries.push(ValidationEntry {
+                    path: file.display().to_string(),
+                    records: None,
+                    error: Some(err.to_string()),
+                });
             }
+        }
+    }
+
+    match cfg.format {
+        ValidateFormat::Text => {
+            for entry in &entries {
+                if let Some(err) = &entry.error {
+                    eprintln!("ERR {}: {}", entry.path, err);
+                } else if !cfg.quiet {
+                    let records = entry.records.unwrap_or(0);
+                    println!("OK {} ({} record(s))", entry.path, records);
+                }
+            }
+            if err_count > 0 {
+                eprintln!(
+                    "Validation failed: {} file(s) invalid, {} file(s) valid",
+                    err_count, ok_count
+                );
+            } else {
+                println!("Validated {} file(s).", ok_count);
+            }
+        }
+        ValidateFormat::Json => {
+            let file_values: Vec<_> = entries
+                .into_iter()
+                .map(|entry| {
+                    json!({
+                        "path": entry.path,
+                        "valid": entry.error.is_none(),
+                        "records": entry.records,
+                        "error": entry.error,
+                    })
+                })
+                .collect();
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "ok_files": ok_count,
+                    "error_files": err_count,
+                    "total_files": ok_count + err_count,
+                    "files": file_values,
+                }))?
+            );
         }
     }
 
@@ -528,8 +601,6 @@ fn validate(cfg: ValidateConfig) -> Result<()> {
             ok_count
         );
     }
-
-    println!("Validated {} file(s).", ok_count);
     Ok(())
 }
 
