@@ -1,6 +1,6 @@
 [package]
 name = "rommy"
-description = "CLI tool to make coding with your chatbot easier"
+description = "CLI to run commands and store structured stdout/stderr execution logs"
 authors = ["Japati Aisyah Bintang <stardove.bintang@gmail.com>", "Oliver Ruebenacker <curoli@gmail.com>"]
 readme = "README.md"
 repository = "https://github.com/jati-bintang/rommy"
@@ -10,6 +10,14 @@ edition = "2024"
 rust-version = "1.85"
 keywords = ["cli", "developer-tools", "snapshot", "chat", "rommy"]
 categories = ["development-tools", "command-line-utilities"]
+include = [
+    "src/**",
+    "tests/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+]
 
 
 [dependencies]
